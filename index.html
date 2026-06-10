@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#121212">
+    <title>Setflow</title>
+    <link rel="manifest" href="manifest.json">
+    <link rel="icon" href="icon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="styles.css?v=56">
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <a class="brand" href="#" aria-label="Setflow home">
+          <span class="brand-mark" aria-hidden="true">S</span>
+          <span>Setflow</span>
+        </a>
+        <div class="top-actions">
+          <span class="status-pill" id="libraryStatus" data-mode="demo">Demo library</span>
+          <button class="icon-button" id="connectButton" type="button" aria-label="Connect Spotify">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M6 12.5c4.5-1.5 8.2-1.1 11.4 1" />
+              <path d="M7 16c3.5-.9 6.6-.6 9.1.8" />
+              <path d="M5 8.8c5.4-1.8 10.4-1.3 14 1.5" />
+            </svg>
+          </button>
+        </div>
+      </header>
+
+      <main class="workspace">
+        <section class="composer-panel" aria-labelledby="composerTitle">
+          <div class="section-head">
+            <p class="eyebrow">New set</p>
+            <h1 id="composerTitle">Prompt the playlist.</h1>
+          </div>
+
+          <form id="playlistForm" class="composer" autocomplete="off">
+            <label class="prompt-box" for="promptInput">
+              <span class="prompt-label">Vibe</span>
+              <textarea id="promptInput" name="prompt" rows="5">Create a playlist for a chill evening with my friends. Use old school rap, pick songs I played the most, make it last 2h, and let it get more intense over time.</textarea>
+            </label>
+
+            <div class="control-grid">
+              <fieldset class="segmented-control">
+                <legend>Length</legend>
+                <label>
+                  <input type="radio" name="duration" value="60">
+                  <span>1h</span>
+                </label>
+                <label>
+                  <input type="radio" name="duration" value="90">
+                  <span>1.5h</span>
+                </label>
+                <label>
+                  <input type="radio" name="duration" value="120" checked>
+                  <span>2h</span>
+                </label>
+                <label>
+                  <input type="radio" name="duration" value="180">
+                  <span>3h</span>
+                </label>
+              </fieldset>
+
+              <label class="select-control" for="sourceSelect">
+                <span>Source</span>
+                <select id="sourceSelect" name="source">
+                  <option value="all" selected>Library mix</option>
+                  <option value="top">Top plays</option>
+                  <option value="saved">Liked songs</option>
+                  <option value="playlist">Playlists</option>
+                  <option value="recent">Recent plays</option>
+                </select>
+              </label>
+
+              <label class="toggle-control">
+                <span>Explicit</span>
+                <input id="explicitToggle" name="explicit" type="checkbox" checked>
+                <span class="switch" aria-hidden="true"></span>
+              </label>
+
+              <label class="toggle-control toggle-control-wide">
+                <span>Smart additions</span>
+                <input id="expandToggle" name="expandCatalog" type="checkbox" checked>
+                <span class="switch" aria-hidden="true"></span>
+              </label>
+            </div>
+
+            <button class="primary-action" type="submit">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 12h14" />
+                <path d="m13 6 6 6-6 6" />
+              </svg>
+              Generate
+            </button>
+          </form>
+        </section>
+
+        <section class="playlist-panel" aria-labelledby="playlistTitle">
+          <div class="playlist-hero">
+            <div class="cover" id="playlistCover" aria-hidden="true">
+              <span></span>
+              <span></span>
+              <span></span>
+              <span></span>
+            </div>
+            <div class="playlist-meta">
+              <p class="eyebrow">Draft playlist</p>
+              <h2 id="playlistTitle">Chill Friends: Golden Hour</h2>
+              <p id="playlistSubtitle">Old school rap arc for a two-hour evening.</p>
+            </div>
+          </div>
+
+          <div class="stats-grid" aria-label="Playlist stats">
+            <div>
+              <span id="statDuration">0m</span>
+              <small>length</small>
+            </div>
+            <div>
+              <span id="statTracks">0</span>
+              <small>tracks</small>
+            </div>
+            <div>
+              <span id="statEnergy">0%</span>
+              <small>peak</small>
+            </div>
+          </div>
+
+          <div class="energy-arc" aria-label="Energy arc">
+            <span></span>
+            <span></span>
+            <span></span>
+            <span></span>
+            <span></span>
+            <span></span>
+            <span></span>
+            <span></span>
+            <span></span>
+            <span></span>
+            <span></span>
+            <span></span>
+          </div>
+
+          <ol class="track-list" id="trackList" aria-label="Generated tracks"></ol>
+
+          <div class="action-bar">
+            <button class="save-action" id="saveButton" type="button">Save to Spotify</button>
+          </div>
+        </section>
+      </main>
+
+      <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    </div>
+
+    <script src="app.js?v=56"></script>
+  </body>
+</html>
