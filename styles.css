@@ -533,8 +533,33 @@ select {
 .action-bar {
   position: sticky;
   bottom: 10px;
-  display: block;
+  display: grid;
+  gap: 8px;
   padding-top: 4px;
+}
+
+.open-playlist {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 40px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  font-weight: 750;
+  text-decoration: none;
+}
+
+.open-playlist[hidden] {
+  display: none;
+}
+
+.track-empty {
+  grid-template-columns: 1fr;
+  justify-items: center;
+  color: var(--muted);
+  text-align: center;
 }
 
 .save-action {

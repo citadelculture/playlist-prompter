@@ -12,6 +12,12 @@ Mobile-first web app prototype for prompt-led Spotify playlist creation.
 - Private playlist creation through Spotify when generated tracks have Spotify URIs
 - Smart additions toggle to choose between strict selected-source generation and catalog expansion
 
+## Hosting notes
+
+- The app is fully static — host `index.html`, `callback.html`, `app.js`, `styles.css`, `manifest.json`, `icon.svg`, and `service-worker.js` on any HTTPS static host (GitHub Pages works, including project subpaths).
+- The OAuth redirect URI is resolved relative to the app directory, so register `<host>/<path>/callback.html` in the Spotify developer dashboard for every origin/path you deploy to.
+- Tokens are stored in `localStorage` on the client. That is acceptable for a PKCE-only prototype; a production backend should own token refresh and playlist writes.
+
 ## Real Spotify wiring
 
 The backend should own token refresh and playlist writes. The client can stay almost unchanged.

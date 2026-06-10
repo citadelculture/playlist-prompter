@@ -1,5 +1,7 @@
 const SPOTIFY_CLIENT_ID = "003f1c3cbbb242b8941a383e45cb9f3b";
-const SPOTIFY_REDIRECT_URI = `${window.location.origin}/callback.html`;
+// Resolve relative to the current directory so the app also works when hosted
+// under a subpath (e.g. GitHub Pages project sites), not just at the origin root.
+const SPOTIFY_REDIRECT_URI = `${window.location.origin}${window.location.pathname.replace(/[^/]*$/, "")}callback.html`;
 const SPOTIFY_SCOPES = [
   "user-top-read",
   "user-library-read",
@@ -64,6 +66,7 @@ const arcNode = document.querySelector(".energy-arc");
 const cover = document.querySelector("#playlistCover");
 const toast = document.querySelector("#toast");
 const saveButton = document.querySelector("#saveButton");
+const openPlaylistLink = document.querySelector("#openPlaylist");
 const connectButton = document.querySelector("#connectButton");
 const libraryStatus = document.querySelector("#libraryStatus");
 
@@ -81,8 +84,13 @@ function parsePrompt(prompt, fallbackDuration) {
   const minuteMatch = text.match(/(\d+)\s*(m|min|minute|minutes)\b/);
   let duration = Number(fallbackDuration);
 
-  if (hourMatch) duration = Math.round(Number(hourMatch[1]) * 60);
-  if (minuteMatch) duration = Number(minuteMatch[1]);
+  if (hourMatch && minuteMatch) {
+    duration = Math.round(Number(hourMatch[1]) * 60) + Number(minuteMatch[1]);
+  } else if (hourMatch) {
+    duration = Math.round(Number(hourMatch[1]) * 60);
+  } else if (minuteMatch) {
+    duration = Number(minuteMatch[1]);
+  }
 
   const tags = new Set();
   const wantsRap = /rap|hip hop|boom bap|bars|cipher|\bmc\b/.test(text);
@@ -645,6 +653,14 @@ function renderPlaylist(tracks, intent) {
   statTracks.textContent = tracks.length;
   statEnergy.textContent = `${Math.round(peak * 100)}%`;
 
+  if (!tracks.length) {
+    trackList.innerHTML = `<li class="track track-empty">No matching tracks found. Try a broader prompt, another source, or enable Smart additions.</li>`;
+    renderArc(tracks);
+    renderCover(tracks);
+    updateSaveButton();
+    return;
+  }
+
   trackList.innerHTML = tracks.map((track, index) => `
     <li class="track" data-source="${escapeHtml(track.source.join(","))}" data-tags="${escapeHtml(track.tags.join(","))}" data-explicit="${track.explicit ? "1" : "0"}" data-score="${escapeHtml(String((track.score || 0).toFixed(2)))}" data-query="${escapeHtml(track.searchQuery || "")}">
       <span class="track-index">${String(index + 1).padStart(2, "0")}</span>
@@ -745,14 +761,35 @@ async function hasSpotifyToken() {
   return Boolean(await getValidToken());
 }
 
+let pendingTokenRefresh = null;
+
 async function getValidToken() {
   const token = readStoredToken();
   if (!token) return "";
   if (Date.now() < token.expiresAt - 60000) return token.accessToken;
-  if (!token.refreshToken) return "";
+  if (!token.refreshToken) {
+    clearStoredToken();
+    return "";
+  }
 
-  const refreshed = await refreshSpotifyToken(token.refreshToken).catch(() => null);
+  // Single-flight: Spotify rotates refresh tokens, so concurrent refreshes
+  // would invalidate each other. Everyone awaits the same request.
+  if (!pendingTokenRefresh) {
+    pendingTokenRefresh = refreshSpotifyToken(token.refreshToken)
+      .catch(() => {
+        clearStoredToken();
+        return null;
+      })
+      .finally(() => {
+        pendingTokenRefresh = null;
+      });
+  }
+  const refreshed = await pendingTokenRefresh;
   return refreshed?.accessToken || "";
+}
+
+function clearStoredToken() {
+  localStorage.removeItem(TOKEN_STORAGE_KEY);
 }
 
 function readStoredToken() {
@@ -785,7 +822,7 @@ async function refreshSpotifyToken(refreshToken) {
   return token;
 }
 
-async function spotifyFetch(path, options = {}) {
+async function spotifyFetch(path, options = {}, attempt = 0) {
   const token = await getValidToken();
   if (!token) throw new Error("Connect Spotify first");
   const url = path.startsWith("https://") ? path : `${SPOTIFY_API_BASE}${path}`;
@@ -799,6 +836,18 @@ async function spotifyFetch(path, options = {}) {
     }
   });
 
+  if (response.status === 429 && attempt < 2) {
+    const retryAfter = Number(response.headers.get("Retry-After")) || 1;
+    await delay(Math.min(retryAfter, 10) * 1000);
+    return spotifyFetch(path, options, attempt + 1);
+  }
+
+  if (response.status === 401) {
+    clearStoredToken();
+    updateConnectionState();
+    throw new Error("Spotify session expired. Connect again.");
+  }
+
   if (!response.ok) {
     const detail = await response.json().catch(() => ({}));
     const message = detail.error?.message || `Spotify returned ${response.status}`;
@@ -807,6 +856,10 @@ async function spotifyFetch(path, options = {}) {
 
   if (response.status === 204) return {};
   return response.json();
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function spotifyPaged(path, maxPages = 4) {
@@ -819,6 +872,29 @@ async function spotifyPaged(path, maxPages = 4) {
     items.push(...(data.items || []));
     next = data.next || "";
     pages += 1;
+  }
+
+  return items;
+}
+
+async function loadSavedTracks(maxItems = 2000) {
+  const first = await spotifyFetch("/me/tracks?limit=50");
+  const items = [...(first.items || [])];
+  const total = Math.min(first.total || items.length, maxItems);
+
+  const offsets = [];
+  for (let offset = 50; offset < total; offset += 50) offsets.push(offset);
+
+  // Fetch remaining pages in small concurrent batches instead of one long
+  // sequential chain, keeping load time and rate-limit pressure reasonable.
+  const batchSize = 5;
+  for (let index = 0; index < offsets.length; index += batchSize) {
+    const batch = await Promise.allSettled(offsets.slice(index, index + batchSize).map((offset) => (
+      spotifyFetch(`/me/tracks?limit=50&offset=${offset}`)
+    )));
+    items.push(...batch
+      .filter((result) => result.status === "fulfilled")
+      .flatMap((result) => result.value.items || []));
   }
 
   return items;
@@ -837,7 +913,7 @@ async function hydrateSpotifyLibrary() {
     spotifyFetch("/me/top/tracks?limit=50&time_range=short_term"),
     spotifyFetch("/me/top/tracks?limit=50&time_range=medium_term"),
     spotifyFetch("/me/top/tracks?limit=50&time_range=long_term"),
-    spotifyPaged("/me/tracks?limit=50", 80),
+    loadSavedTracks(),
     spotifyFetch("/me/player/recently-played?limit=50"),
     spotifyPaged("/me/playlists?limit=50", 3)
   ]);
@@ -937,7 +1013,8 @@ async function searchSpotifyCatalog(intent) {
     const params = new URLSearchParams({
       q: query,
       type: "track",
-      limit: "10"
+      limit: "10",
+      market: "from_token"
     });
     return spotifyFetch(`/search?${params.toString()}`);
   }));
@@ -1312,7 +1389,7 @@ async function createSpotifyPlaylist() {
       body: JSON.stringify({
         name: currentIntent?.title || "Setflow Playlist",
         public: false,
-        description: ""
+        description: buildPlaylistDescription(currentIntent)
       })
     });
 
@@ -1334,8 +1411,18 @@ async function createSpotifyPlaylist() {
   }
 }
 
+function buildPlaylistDescription(intent) {
+  const prompt = (intent?.raw || "").replace(/\s+/g, " ").trim();
+  if (!prompt) return "Generated with Setflow.";
+  return `Setflow: ${prompt}`.slice(0, 250);
+}
+
 function updateSaveButton() {
   saveButton.textContent = "Save to Spotify";
+  if (openPlaylistLink) {
+    openPlaylistLink.hidden = !currentPlaylistUrl;
+    if (currentPlaylistUrl) openPlaylistLink.href = currentPlaylistUrl;
+  }
 }
 
 async function updateConnectionState() {
@@ -1371,8 +1458,10 @@ function formatShort(seconds) {
 }
 
 function parseYear(value) {
+  // Unknown release dates stay null rather than defaulting to the current
+  // year, which would wrongly exclude tracks from "old school" style prompts.
   const year = Number(String(value || "").slice(0, 4));
-  return Number.isFinite(year) && year > 0 ? year : new Date().getFullYear();
+  return Number.isFinite(year) && year > 1900 ? year : null;
 }
 
 function clamp(value, min, max) {
@@ -1424,10 +1513,13 @@ function showToast(message) {
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
+  if (form.classList.contains("is-loading")) return;
   form.classList.add("is-loading");
   try {
     await generatePlaylist();
     showToast("Draft playlist generated.");
+  } catch (error) {
+    showToast(`Could not generate playlist: ${error.message}`);
   } finally {
     form.classList.remove("is-loading");
   }
@@ -1436,11 +1528,19 @@ form.addEventListener("submit", async (event) => {
 saveButton.addEventListener("click", createSpotifyPlaylist);
 
 connectButton.addEventListener("click", async () => {
-  if (await hasSpotifyToken()) {
-    await hydrateSpotifyLibrary();
-    return;
+  if (connectButton.disabled) return;
+  connectButton.disabled = true;
+  try {
+    if (await hasSpotifyToken()) {
+      await hydrateSpotifyLibrary();
+      return;
+    }
+    await startSpotifyLogin();
+  } catch (error) {
+    showToast(`Spotify connection failed: ${error.message}`);
+  } finally {
+    connectButton.disabled = false;
   }
-  await startSpotifyLogin();
 });
 
 if ("serviceWorker" in navigator) {
@@ -1449,8 +1549,22 @@ if ("serviceWorker" in navigator) {
   });
 }
 
+cleanAuthRedirectParams();
 applyUrlPreset();
-hydrateSpotifyLibrary();
+hydrateSpotifyLibrary().catch((error) => {
+  activeLibrary = liveLibrary.length ? liveLibrary : demoLibrary;
+  setStatus("Demo library", "demo");
+  generatePlaylist({ includeSearch: false }).catch(() => {});
+  showToast(`Spotify load failed: ${error.message}`);
+});
+
+function cleanAuthRedirectParams() {
+  const params = new URLSearchParams(window.location.search);
+  if (!params.has("spotify")) return;
+  params.delete("spotify");
+  const query = params.toString();
+  window.history.replaceState({}, "", `${window.location.pathname}${query ? `?${query}` : ""}`);
+}
 
 function applyUrlPreset() {
   const params = new URLSearchParams(window.location.search);

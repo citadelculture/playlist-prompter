@@ -5,19 +5,21 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="theme-color" content="#121212">
     <title>Connecting Spotify...</title>
-    <link rel="stylesheet" href="styles.css?v=56">
+    <link rel="stylesheet" href="styles.css?v=57">
   </head>
   <body>
     <main class="callback-screen">
       <div class="brand-mark" aria-hidden="true">S</div>
       <h1>Connecting Spotify</h1>
       <p id="callbackStatus">Finishing authorization.</p>
+      <p><a id="callbackBack" href="./index.html" hidden>Back to Setflow</a></p>
     </main>
 
     <script>
       const SPOTIFY_CLIENT_ID = "003f1c3cbbb242b8941a383e45cb9f3b";
       const TOKEN_STORAGE_KEY = "setflow.spotifyToken";
       const statusNode = document.querySelector("#callbackStatus");
+      const backLink = document.querySelector("#callbackBack");
 
       async function finishSpotifyLogin() {
         const params = new URLSearchParams(window.location.search);
@@ -38,7 +40,9 @@
           body: new URLSearchParams({
             grant_type: "authorization_code",
             code,
-            redirect_uri: `${window.location.origin}/callback.html`,
+            // Must byte-match the redirect_uri used in the authorize request,
+            // which is resolved relative to the app directory (subpath-safe).
+            redirect_uri: `${window.location.origin}${window.location.pathname}`,
             client_id: SPOTIFY_CLIENT_ID,
             code_verifier: verifier
           })
@@ -63,6 +67,7 @@
 
       finishSpotifyLogin().catch((error) => {
         statusNode.textContent = `Connection failed: ${error.message}`;
+        backLink.hidden = false;
       });
     </script>
   </body>
