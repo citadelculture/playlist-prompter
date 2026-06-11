@@ -109,7 +109,8 @@ function parsePrompt(prompt, fallbackDuration) {
   const wantsDesertScene = /\b(desert|namibia|namibian|sahara|dune|dunes|fireplace|campfire|fire|savanna|outback)\b/.test(text);
   const wantsCooking = /\b(cooking|cook|kitchen|dinner|supper|hosting|host)\b/.test(text);
   const wantsSoftBeautiful = /\b(soft|beautiful|pretty|gentle|cozy|cosy|warm|smooth|sweet|tender|calm|cute|girls'? night|girl dinner)\b/.test(text);
-  const wantsStrictSoftMood = (wantsSoftBeautiful || wantsCooking) && !wantsRap && !wantsHouse && !wantsDesertScene;
+  const wantsWorkout = /\b(gym|workout|work ?out|training|lift|lifting|fight|fighter|boxing|boxer|mma|muay thai|kickbox\w*|sparring|spar|cardio|crossfit|beast mode|pump)\b/.test(text);
+  const wantsStrictSoftMood = (wantsSoftBeautiful || wantsCooking) && !wantsRap && !wantsHouse && !wantsDesertScene && !wantsWorkout;
   const noNewSchool = /no new school|old school|golden era|90s|classic rap|classic hip hop/.test(text);
 
   if (/old school|classic rap|classic hip hop|golden era|90s|boom bap/.test(text)) tags.add("old school rap");
@@ -145,8 +146,20 @@ function parsePrompt(prompt, fallbackDuration) {
     if (/namibia|namibian|africa|african|sahara|savanna/.test(text)) tags.add("african");
     if (/fireplace|campfire|fire/.test(text)) tags.add("campfire");
   }
+  if (wantsWorkout) {
+    tags.add("workout");
+    tags.add("intense");
+    tags.add("hype");
+  }
   if (/no vocal|instrumental/.test(text)) tags.add("no vocals");
   if (/rain/.test(text)) tags.add("rainy");
+
+  // Unknown vibe: no preset family matched. Salvage the meaningful prompt
+  // words as tags so the generic substring matcher has something to work with.
+  const usedPromptWordFallback = !tags.size;
+  if (usedPromptWordFallback) {
+    promptWordTags(text).forEach((tag) => tags.add(tag));
+  }
 
   const wantsPlayedMost = /played|plays|top|favorite|favourite|most/.test(text);
   const wantsRising = /intense|rise|rising|build|over time|peak/.test(text);
@@ -171,9 +184,27 @@ function parsePrompt(prompt, fallbackDuration) {
       wantsStrictSoftMood ? "soft" : ""
     ].filter(Boolean),
     maxYear: noNewSchool ? 2012 : null,
+    energyRange: wantsWorkout ? { min: 0.52, max: 1 } : null,
+    usedPromptWordFallback,
     title: applyNamingStyle(buildTitle(text), namingProfile),
     subtitle: buildSubtitle(duration, tags)
   };
+}
+
+const PROMPT_STOP_WORDS = new Set([
+  "playlist", "music", "songs", "song", "tracks", "track", "make", "create",
+  "give", "want", "need", "with", "that", "this", "some", "vibe", "vibes",
+  "mood", "please", "hour", "hours", "minute", "minutes", "long", "last",
+  "about", "around", "from", "into", "over", "time", "stuff", "things",
+  "good", "nice", "great", "really"
+]);
+
+function promptWordTags(text) {
+  return [...new Set(text
+    .split(/[^a-z0-9&']+/i)
+    .map((word) => word.toLowerCase())
+    .filter((word) => word.length >= 4 && !PROMPT_STOP_WORDS.has(word)))]
+    .slice(0, 6);
 }
 
 function buildTitle(text) {
@@ -183,6 +214,7 @@ function buildTitle(text) {
   if (/\bsex\b|sexy|sensual|intimate|bedroom|make out|after dark|late night/.test(text) && /\bhouse\b|deep house|tech house|melodic house/.test(text)) return "After Dark House";
   if (/namibia|namibian|desert|dune|dunes|campfire|fireplace/.test(text)) return "Namib Desert Fire";
   if (/cooking|cook|kitchen|dinner|supper/.test(text) && /soft|beautiful|pretty|gentle|cozy|cosy|warm|girls'? night|girl dinner/.test(text)) return "Kitchen Glow";
+  if (/gym|workout|work ?out|training|fight|boxing|mma|sparring|crossfit|cardio/.test(text)) return "Fight Camp";
   if (/pre.?game|party/.test(text)) return "Pre-Game: High Signal";
   if (/rain/.test(text)) return "Rainy Room Rotation";
   if (/house|sunset/.test(text)) return "Sunset House Drift";
@@ -200,6 +232,7 @@ function buildPrimaryLabel(tags) {
   const tagSet = new Set(tags);
   if (tagSet.has("old school rap")) return "old school rap";
   if (tagSet.has("rap")) return "rap";
+  if (tagSet.has("workout")) return "workout";
   if (tagSet.has("soft")) return "soft";
   if (tagSet.has("dinner")) return "dinner";
   return tags[0] || "library";
@@ -350,6 +383,9 @@ function tagFitScore(track, tag) {
   if (tag === "beautiful" && isBeautifulCandidate(track)) return 1.75;
   if (tag === "dinner" && isDinnerCandidate(track)) return 1.45;
   if (tag === "cozy" && track.energy < 0.6 && isSoftBeautifulCandidate(track)) return 1.15;
+  if (tag === "workout" && isWorkoutCandidate(track)) return 1.9;
+  if (tag === "hype" && track.energy > 0.62) return 0.9;
+  if (tag === "intense" && track.energy > 0.6) return 0.6;
   if (tag === "chill" && track.energy < 0.45) return 0.7;
   if (tag === "friends" && track.energy > 0.48) return 0.45;
 
@@ -464,6 +500,14 @@ function scoreIntimateFit(track) {
 
 function isOldSchoolRapCandidate(track) {
   return isRapCandidate(track) && track.year >= 1985 && track.year <= 2012;
+}
+
+function isWorkoutCandidate(track) {
+  if (track.energy < 0.5) return false;
+  const tagText = track.tags.join(" ").toLowerCase();
+  if (/\b(ballad|acoustic|ambient|lullaby|bossa nova|vocal jazz|easy listening|lo-?fi)\b/.test(tagText)) return false;
+  return /\b(trap|drill|phonk|hip hop|rap|grime|metal|hard rock|punk|hardstyle|hardcore|dubstep|edm|electro|techno|dance)\b/.test(tagText)
+    || track.energy >= 0.66;
 }
 
 function buildPlaylist(intent, controls, candidateLibrary = activeLibrary) {
@@ -745,6 +789,8 @@ async function generatePlaylist(options = {}) {
     } catch (error) {
       showToast(`AI parsing skipped: ${error.message}`);
     }
+  } else if (!hasAnthropicKey() && intent.usedPromptWordFallback) {
+    showToast("This vibe isn't a built-in preset — tap the sparkle button to add an Anthropic key for real AI matching.");
   }
 
   let candidateLibrary = activeLibrary.length ? activeLibrary : demoLibrary;
@@ -1110,6 +1156,22 @@ function buildCatalogQueries(intent) {
     ];
   }
 
+  if (intent.tags.includes("workout")) {
+    return [
+      "gym hype rap",
+      "aggressive trap gym",
+      "phonk gym",
+      "drill workout hype",
+      "boxing training hip hop",
+      "fight night rap",
+      "beast mode trap",
+      "hard rock gym anthems",
+      "nu metal adrenaline",
+      "hardstyle gym",
+      "uk drill bangers",
+      "eye of the tiger Survivor"
+    ];
+  }
   if (intent.tags.includes("old school rap")) {
     return [
       "old school hip hop rap 90s",
@@ -1217,7 +1279,11 @@ function buildCatalogQueries(intent) {
   if (intent.tags.includes("jazz rap")) return ["jazz rap", "laid back jazz rap"];
   if (intent.tags.includes("soul")) return ["soul hip hop", "rainy soul"];
   if (intent.tags.includes("rainy")) return ["rainy day soul"];
-  return [intent.raw.split(/\s+/).slice(0, 8).join(" ")].filter(Boolean);
+  // Last resort: search the meaningful prompt words, not the literal sentence
+  // ("playlist for fighter gym" used to be searched verbatim).
+  const core = promptWordTags(intent.text).join(" ");
+  if (!core) return [];
+  return [core, `${core} music`];
 }
 
 function reinforceSearchIntent(track, intent, query = "") {
@@ -1248,6 +1314,10 @@ function reinforceSearchIntent(track, intent, query = "") {
     if (/jazz|bossa/.test(query)) tags.add("jazz");
   }
   if (intent.tags.includes("chill") && track.energy < 0.55) tags.add("chill");
+  if (intent.tags.includes("workout") && track.energy >= 0.5) {
+    tags.add("workout");
+    if (track.energy > 0.62) tags.add("hype");
+  }
   if (intent.fromAI) {
     // The AI chose these queries for this vibe, so tag results with the intent
     // tags they textually support — that's what tagFitScore matches against.
@@ -1414,6 +1484,7 @@ function estimateEnergy(track, tags, source) {
   if (source === "recent") energy += 0.03;
   if (tags.includes("party")) energy += 0.16;
   if (tags.includes("house")) energy += 0.12;
+  if (tags.some((tag) => /phonk|hardstyle|drill|metal|hardcore|punk|dubstep/.test(tag))) energy += 0.12;
   if (tags.includes("chill")) energy -= 0.14;
   if (tags.includes("soul") || tags.includes("jazz rap")) energy -= 0.05;
   return clamp(energy, 0.18, 0.88);

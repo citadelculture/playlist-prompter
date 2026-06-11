@@ -1,4 +1,4 @@
-const CACHE_NAME = "setflow-v58";
+const CACHE_NAME = "setflow-v59";
 const ASSETS = [
   "./",
   "./index.html",
