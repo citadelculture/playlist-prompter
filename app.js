@@ -14,6 +14,10 @@ const SPOTIFY_SCOPES = [
 const SPOTIFY_API_BASE = "https://api.spotify.com/v1";
 const TOKEN_STORAGE_KEY = "setflow.spotifyToken";
 const LAST_PLAYLIST_KEY = "setflow.lastPlaylistUrl";
+const ANTHROPIC_KEY_STORAGE = "setflow.anthropicKey";
+const ANTHROPIC_MODEL_STORAGE = "setflow.anthropicModel";
+const ANTHROPIC_DEFAULT_MODEL = "claude-opus-4-8";
+const ANTHROPIC_MODELS = new Set(["claude-opus-4-8", "claude-haiku-4-5"]);
 
 const demoLibrary = [
   { title: "Corner Store Cipher", artist: "Northside Poets", year: 1994, duration: 248, energy: 0.31, plays: 96, tags: ["old school rap", "chill", "friends", "boom bap", "rap", "hip hop"], source: ["top", "saved"], explicit: true, color: "#21a35b" },
@@ -69,6 +73,12 @@ const saveButton = document.querySelector("#saveButton");
 const openPlaylistLink = document.querySelector("#openPlaylist");
 const connectButton = document.querySelector("#connectButton");
 const libraryStatus = document.querySelector("#libraryStatus");
+const aiButton = document.querySelector("#aiButton");
+const aiDialog = document.querySelector("#aiDialog");
+const aiKeyInput = document.querySelector("#aiKeyInput");
+const aiModelSelect = document.querySelector("#aiModelSelect");
+const aiSaveButton = document.querySelector("#aiSaveButton");
+const aiClearButton = document.querySelector("#aiClearButton");
 
 let lastPrompt = promptInput.value;
 let liveLibrary = [];
@@ -215,8 +225,11 @@ function scoreTrack(track, intent, source, allowExplicit) {
   const trustedSoftSearchScore = intent.requiredFamilies?.includes("soft") && trustedSoftQueryMatchesTrack(track.searchQuery || "", track) ? 1.35 : 0;
   const chillPenalty = intent.tags.includes("chill") && track.energy > 0.82 ? -1.4 : 0;
   const searchPenalty = track.source.includes("search") && intent.wantsPlayedMost ? -0.55 : 0;
+  const energyFit = intent.energyRange
+    ? (track.energy >= intent.energyRange.min && track.energy <= intent.energyRange.max ? 0.9 : -0.9)
+    : 0;
 
-  return tagScore + playScore + eraScore + timeScore + intimateScore + qualityScore + trustedSoftSearchScore + chillPenalty + searchPenalty;
+  return tagScore + playScore + eraScore + timeScore + intimateScore + qualityScore + trustedSoftSearchScore + chillPenalty + searchPenalty + energyFit;
 }
 
 function parseTimeIntent(text) {
@@ -339,6 +352,12 @@ function tagFitScore(track, tag) {
   if (tag === "cozy" && track.energy < 0.6 && isSoftBeautifulCandidate(track)) return 1.15;
   if (tag === "chill" && track.energy < 0.45) return 0.7;
   if (tag === "friends" && track.energy > 0.48) return 0.45;
+
+  // Generic fallback for AI-derived tags the hand-written rules above don't
+  // know: substring-match against the track's genre tags, then its full text.
+  const tagText = track.tags.join(" ").toLowerCase();
+  if (tag.length >= 3 && tagText.includes(tag)) return 1.8;
+  if (tag.length >= 4 && normalizeSearchText(track).includes(tag)) return 1.05;
   return 0;
 }
 
@@ -349,6 +368,12 @@ function passesHardConstraints(track, intent) {
   if (intent.requiredFamilies?.includes("soft") && !isSoftBeautifulCandidate(track)) return false;
   if (intent.requiredFamilies?.includes("soft") && track.explicit && !/\b(explicit|dirty|uncensored)\b/.test(intent.text)) return false;
   if (intent.maxYear && track.year && track.year > intent.maxYear) return false;
+  if (intent.minYear && track.year && track.year < intent.minYear) return false;
+  if (intent.excludeTerms?.length && intent.excludeTerms.some((term) => normalizeSearchText(track).includes(term))) return false;
+  // requireTerms only gate catalog search results — library tracks earn their
+  // place through tag scoring instead of being hard-filtered away.
+  if (intent.requireTerms?.length && track.source.includes("search")
+    && !intent.requireTerms.some((term) => normalizeSearchText(track).includes(term))) return false;
   if (track.source.includes("search") && (track.duration < 120 || track.duration > 720)) return false;
   if (track.source.includes("search") && isLowQualitySearchResult(track)) return false;
   if (track.source.includes("search") && isGenericSearchResult(track)) return false;
@@ -711,7 +736,17 @@ function getControls() {
 
 async function generatePlaylist(options = {}) {
   const controls = getControls();
-  const intent = parsePrompt(promptInput.value, controls.duration);
+  let intent = parsePrompt(promptInput.value, controls.duration);
+
+  if (hasAnthropicKey() && options.useAI !== false && promptInput.value.trim()) {
+    setStatus("AI reading prompt", "loading");
+    try {
+      intent = mergeAiIntent(intent, await aiParseIntent(promptInput.value));
+    } catch (error) {
+      showToast(`AI parsing skipped: ${error.message}`);
+    }
+  }
+
   let candidateLibrary = activeLibrary.length ? activeLibrary : demoLibrary;
   let catalogTracks = [];
   const canSearchCatalog = controls.expandCatalog && options.includeSearch !== false && await hasSpotifyToken();
@@ -729,7 +764,17 @@ async function generatePlaylist(options = {}) {
     }
   }
 
-  const tracks = buildPlaylist(intent, controls, candidateLibrary);
+  let tracks = buildPlaylist(intent, controls, candidateLibrary);
+
+  if (intent.fromAI && tracks.length >= 5) {
+    setStatus("AI curating tracks", "loading");
+    try {
+      tracks = await aiRefineSelection(tracks, intent);
+    } catch (error) {
+      showToast(`AI curation skipped: ${error.message}`);
+    }
+  }
+
   renderPlaylist(tracks, intent);
   lastPrompt = promptInput.value;
   updateConnectionState();
@@ -1042,6 +1087,10 @@ async function searchSpotifyCatalog(intent) {
 }
 
 function buildCatalogQueries(intent) {
+  // AI-generated queries are tailored to the actual prompt; prefer them over
+  // the hand-curated lists below.
+  if (intent.searchQueries?.length) return intent.searchQueries.slice(0, 20);
+
   if (intent.timeIntent?.year) {
     const year = intent.timeIntent.year;
     const season = intent.timeIntent.season;
@@ -1199,6 +1248,14 @@ function reinforceSearchIntent(track, intent, query = "") {
     if (/jazz|bossa/.test(query)) tags.add("jazz");
   }
   if (intent.tags.includes("chill") && track.energy < 0.55) tags.add("chill");
+  if (intent.fromAI) {
+    // The AI chose these queries for this vibe, so tag results with the intent
+    // tags they textually support — that's what tagFitScore matches against.
+    const haystack = `${normalizeSearchText(track)} ${query.toLowerCase()}`;
+    intent.tags.forEach((tag) => {
+      if (tag.length >= 3 && haystack.includes(tag)) tags.add(tag);
+    });
+  }
   return { ...track, tags: [...tags] };
 }
 
@@ -1439,7 +1496,7 @@ async function updateConnectionState() {
 
 function setStatus(message, mode) {
   if (!libraryStatus) return;
-  libraryStatus.textContent = message;
+  libraryStatus.textContent = hasAnthropicKey() && mode !== "loading" ? `${message} · AI` : message;
   libraryStatus.dataset.mode = mode;
 }
 
@@ -1511,6 +1568,237 @@ function showToast(message) {
   }, 3600);
 }
 
+// --- AI intent parsing and selection (Claude API, optional) ---------------
+// When the user stores an Anthropic API key, Claude replaces the regex
+// heuristics for prompt understanding and re-judges the selected tracks by
+// name. Without a key, everything falls back to the heuristic pipeline.
+
+function getAnthropicKey() {
+  return (localStorage.getItem(ANTHROPIC_KEY_STORAGE) || "").trim();
+}
+
+function getAnthropicModel() {
+  const stored = localStorage.getItem(ANTHROPIC_MODEL_STORAGE) || "";
+  return ANTHROPIC_MODELS.has(stored) ? stored : ANTHROPIC_DEFAULT_MODEL;
+}
+
+function hasAnthropicKey() {
+  return Boolean(getAnthropicKey());
+}
+
+async function anthropicJson(system, userText, schema, maxTokens = 2000) {
+  const apiKey = getAnthropicKey();
+  if (!apiKey) throw new Error("No Anthropic API key set");
+  const model = getAnthropicModel();
+
+  const body = {
+    model,
+    max_tokens: maxTokens,
+    system,
+    messages: [{ role: "user", content: userText }],
+    output_config: { format: { type: "json_schema", schema } }
+  };
+  // Effort + adaptive thinking are Opus-tier controls; Haiku rejects them.
+  if (model.startsWith("claude-opus")) {
+    body.thinking = { type: "adaptive" };
+    body.output_config.effort = "low";
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 45000);
+  let response;
+  try {
+    response = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      signal: controller.signal,
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
+        "anthropic-dangerous-direct-browser-access": "true"
+      },
+      body: JSON.stringify(body)
+    });
+  } catch (error) {
+    throw new Error(error.name === "AbortError" ? "AI request timed out" : "Could not reach the Anthropic API");
+  } finally {
+    clearTimeout(timer);
+  }
+
+  if (response.status === 401) throw new Error("Invalid Anthropic API key");
+  if (response.status === 429) throw new Error("Anthropic rate limit hit, try again shortly");
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}));
+    throw new Error(detail.error?.message || `Anthropic returned ${response.status}`);
+  }
+
+  const data = await response.json();
+  const text = (data.content || []).find((block) => block.type === "text")?.text || "";
+  return JSON.parse(text);
+}
+
+const AI_INTENT_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: [
+    "duration_minutes", "tags", "arc", "wants_played_most", "quality_bias",
+    "min_year", "max_year", "energy_min", "energy_max",
+    "exclude_terms", "require_terms", "search_queries", "title"
+  ],
+  properties: {
+    duration_minutes: { type: ["integer", "null"], description: "Requested playlist length in minutes, null if not stated" },
+    tags: { type: "array", items: { type: "string" }, description: "8-14 lowercase genre/mood/scene tags describing the vibe" },
+    arc: { type: "string", enum: ["natural", "rising", "latePeak", "steady"], description: "Energy progression the prompt asks for" },
+    wants_played_most: { type: "boolean", description: "True if the user wants their most-played/favorite tracks" },
+    quality_bias: { type: "boolean", description: "True if the user asks for the best/essential/tasteful picks" },
+    min_year: { type: ["integer", "null"] },
+    max_year: { type: ["integer", "null"] },
+    energy_min: { type: ["number", "null"], description: "0-1, lower bound of fitting track energy, null if unconstrained" },
+    energy_max: { type: ["number", "null"], description: "0-1, upper bound of fitting track energy, null if unconstrained" },
+    exclude_terms: { type: "array", items: { type: "string" }, description: "Lowercase genre/artist/keyword terms that clearly do NOT fit the vibe" },
+    require_terms: { type: "array", items: { type: "string" }, description: "Lowercase terms a catalog search result must mention to fit; empty if the vibe is broad" },
+    search_queries: { type: "array", items: { type: "string" }, description: "8-16 Spotify track-search queries for this vibe: mix genre/mood phrases with specific iconic 'Artist Song' picks" },
+    title: { type: "string", description: "Short evocative playlist title, max 5 words" }
+  }
+};
+
+const AI_INTENT_SYSTEM = `You turn a free-form playlist request into structured retrieval parameters for a Spotify playlist builder.
+The builder scores tracks by matching your tags against Spotify artist-genre tags and track/album text, filters with exclude_terms/require_terms (matched against lowercase track+artist+genre text), and runs your search_queries against Spotify track search.
+Be concrete and use vocabulary that actually appears in Spotify genre labels (e.g. "deep house", "boom bap", "neo soul", "desert blues", "bedroom pop").
+For search_queries, favor queries that return real fitting songs: genre + mood phrases, era-scoped queries, and a few iconic "Artist Song" picks that define the vibe.
+Energy bounds: ballads/ambient ≈ 0.1-0.4, dinner/chill ≈ 0.2-0.55, groovy ≈ 0.4-0.7, party/peak ≈ 0.6-1.0.`;
+
+async function aiParseIntent(prompt) {
+  return anthropicJson(AI_INTENT_SYSTEM, `Playlist request: "${prompt}"`, AI_INTENT_SCHEMA);
+}
+
+function mergeAiIntent(base, ai) {
+  const tags = new Set(base.tags);
+  (ai.tags || []).map(normalizeTerm).filter(Boolean).forEach((tag) => tags.add(tag));
+  const duration = ai.duration_minutes || base.duration;
+
+  return {
+    ...base,
+    fromAI: true,
+    duration,
+    tags: [...tags],
+    wantsPlayedMost: base.wantsPlayedMost || Boolean(ai.wants_played_most),
+    qualityBias: base.qualityBias || Boolean(ai.quality_bias),
+    arc: base.arc !== "natural" ? base.arc : (ai.arc || "natural"),
+    maxYear: base.maxYear || ai.max_year || null,
+    minYear: ai.min_year || null,
+    energyRange: ai.energy_min != null && ai.energy_max != null
+      ? { min: clamp(ai.energy_min, 0, 1), max: clamp(ai.energy_max, 0, 1) }
+      : null,
+    excludeTerms: (ai.exclude_terms || []).map(normalizeTerm).filter(Boolean),
+    requireTerms: (ai.require_terms || []).map(normalizeTerm).filter(Boolean),
+    searchQueries: (ai.search_queries || []).filter(Boolean).slice(0, 20),
+    title: applyNamingStyle(ai.title || base.title, namingProfile),
+    subtitle: buildSubtitle(duration, [...tags])
+  };
+}
+
+function normalizeTerm(value) {
+  return String(value || "")
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim();
+}
+
+const AI_RERANK_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["ordered_indices"],
+  properties: {
+    ordered_indices: {
+      type: "array",
+      items: { type: "integer" },
+      description: "Indices of the tracks to keep, in playback order. Drop tracks that do not fit the vibe."
+    }
+  }
+};
+
+const AI_RERANK_SYSTEM = `You curate a playlist from pre-selected candidate tracks.
+Judge each track by your knowledge of the actual song and artist, not just the metadata shown.
+Drop tracks that clash with the requested vibe. Order the rest to match the requested energy arc and total duration.
+Keep enough tracks to roughly fill the target duration.`;
+
+async function aiRefineSelection(tracks, intent) {
+  const lines = tracks.map((track, index) => (
+    `${index}. ${track.title} — ${track.artist} (${track.year || "?"}) [${track.tags.slice(0, 6).join(", ")}] energy=${track.energy.toFixed(2)} ${formatShort(track.duration)}`
+  ));
+  const userText = [
+    `Playlist request: "${intent.raw}"`,
+    `Target duration: ${intent.duration} minutes. Energy arc: ${intent.arc}.`,
+    "Candidate tracks:",
+    ...lines
+  ].join("\n");
+
+  const result = await anthropicJson(AI_RERANK_SYSTEM, userText, AI_RERANK_SCHEMA);
+  return applyAiOrder(tracks, result.ordered_indices || [], intent);
+}
+
+function applyAiOrder(tracks, indices, intent) {
+  const seen = new Set();
+  const picked = [];
+  indices.forEach((index) => {
+    if (Number.isInteger(index) && index >= 0 && index < tracks.length && !seen.has(index)) {
+      seen.add(index);
+      picked.push(tracks[index]);
+    }
+  });
+  if (picked.length < Math.min(5, tracks.length)) return tracks;
+
+  // If the model trimmed well below the target length, top back up with the
+  // remaining tracks rather than shipping a short playlist.
+  const targetSeconds = intent.duration * 60;
+  let seconds = picked.reduce((sum, track) => sum + track.duration, 0);
+  if (seconds < targetSeconds - 600) {
+    tracks.forEach((track, index) => {
+      if (!seen.has(index) && seconds < targetSeconds - 90) {
+        picked.push(track);
+        seconds += track.duration;
+      }
+    });
+  }
+  return picked;
+}
+
+function setupAiDialog() {
+  if (!aiButton || !aiDialog) return;
+
+  aiButton.addEventListener("click", () => {
+    aiKeyInput.value = getAnthropicKey();
+    aiModelSelect.value = getAnthropicModel();
+    aiDialog.showModal();
+  });
+
+  aiSaveButton.addEventListener("click", () => {
+    const key = aiKeyInput.value.trim();
+    if (key) {
+      localStorage.setItem(ANTHROPIC_KEY_STORAGE, key);
+      localStorage.setItem(ANTHROPIC_MODEL_STORAGE, aiModelSelect.value);
+      showToast("AI prompt parsing enabled.");
+    } else {
+      localStorage.removeItem(ANTHROPIC_KEY_STORAGE);
+      showToast("AI disabled.");
+    }
+    aiDialog.close();
+    updateConnectionState();
+  });
+
+  aiClearButton.addEventListener("click", () => {
+    localStorage.removeItem(ANTHROPIC_KEY_STORAGE);
+    aiKeyInput.value = "";
+    aiDialog.close();
+    showToast("AI disabled.");
+    updateConnectionState();
+  });
+}
+
+// ---------------------------------------------------------------------------
+
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
   if (form.classList.contains("is-loading")) return;
@@ -1549,6 +1837,7 @@ if ("serviceWorker" in navigator) {
   });
 }
 
+setupAiDialog();
 cleanAuthRedirectParams();
 applyUrlPreset();
 hydrateSpotifyLibrary().catch((error) => {

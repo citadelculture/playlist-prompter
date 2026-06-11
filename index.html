@@ -7,7 +7,7 @@
     <title>Setflow</title>
     <link rel="manifest" href="manifest.json">
     <link rel="icon" href="icon.svg" type="image/svg+xml">
-    <link rel="stylesheet" href="styles.css?v=57">
+    <link rel="stylesheet" href="styles.css?v=58">
   </head>
   <body>
     <div class="app-shell">
@@ -18,6 +18,12 @@
         </a>
         <div class="top-actions">
           <span class="status-pill" id="libraryStatus" data-mode="demo">Demo library</span>
+          <button class="icon-button" id="aiButton" type="button" aria-label="AI settings">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z" />
+              <path d="M19 15l.9 2.1L22 18l-2.1.9L19 21l-.9-2.1L16 18l2.1-.9z" />
+            </svg>
+          </button>
           <button class="icon-button" id="connectButton" type="button" aria-label="Connect Spotify">
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="M6 12.5c4.5-1.5 8.2-1.1 11.4 1" />
@@ -151,8 +157,30 @@
       </main>
 
       <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+      <dialog class="ai-dialog" id="aiDialog">
+        <form method="dialog" class="ai-dialog-body">
+          <h2>AI prompt understanding</h2>
+          <p>Add your Anthropic API key and Claude will interpret any vibe — not just the built-in ones — and hand-pick the tracks. The key stays in this browser and is only sent to api.anthropic.com. Each generate costs a fraction of a cent.</p>
+          <label class="ai-field">
+            <span>Anthropic API key</span>
+            <input id="aiKeyInput" type="password" placeholder="sk-ant-..." autocomplete="off">
+          </label>
+          <label class="ai-field">
+            <span>Model</span>
+            <select id="aiModelSelect">
+              <option value="claude-opus-4-8" selected>Claude Opus 4.8 — best quality</option>
+              <option value="claude-haiku-4-5">Claude Haiku 4.5 — fastest, cheapest</option>
+            </select>
+          </label>
+          <div class="ai-dialog-actions">
+            <button class="save-action" id="aiSaveButton" type="button">Save</button>
+            <button class="ai-clear" id="aiClearButton" type="button">Disable AI</button>
+          </div>
+        </form>
+      </dialog>
     </div>
 
-    <script src="app.js?v=57"></script>
+    <script src="app.js?v=58"></script>
   </body>
 </html>
